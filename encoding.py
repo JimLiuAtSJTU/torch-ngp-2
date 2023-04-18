@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from custom_hash_encoding.hash_encoding import SpatialFusedTimeHasher,HashEmbedder
+
 class FreqEncoder(nn.Module):
     def __init__(self, input_dim, max_freq_log2, N_freqs,
                  log_sampling=True, include_input=True,
@@ -45,7 +47,7 @@ class FreqEncoder(nn.Module):
 def get_encoder(encoding, input_dim=3, 
                 multires=6, 
                 degree=4,
-                num_levels=16, level_dim=2, base_resolution=16, log2_hashmap_size=19, desired_resolution=2048, align_corners=False,
+                num_levels=16, level_dim=2, base_resolution=16, log2_hashmap_size=19, desired_resolution=2048*4, align_corners=False,
                 **kwargs):
 
     if encoding == 'None':
@@ -72,7 +74,36 @@ def get_encoder(encoding, input_dim=3,
         from ashencoder import AshEncoder
         encoder = AshEncoder(input_dim=input_dim, output_dim=16, log2_hashmap_size=log2_hashmap_size, resolution=desired_resolution)
 
+    elif encoding == 'pyhash':
+        assert input_dim==3,"the time hash for dim!=3 is not implemented."
+
+
+
+        bound=2.5  # leave some margin to avoid nan problems.
+        encoder= HashEmbedder(bounding_box=(-bound,bound),
+                                      n_levels=num_levels,
+                                      n_features_per_level=level_dim,
+                                      log2_hashmap_size=log2_hashmap_size,
+                                      base_resolution=base_resolution,
+                                      finest_resolution=desired_resolution,
+                                      )
+
+    elif encoding == 'pyhash-fused-time':
+        assert input_dim==4,"expected  [ [x,y,z],t] input."
+        bound=1 # leave some margin to avoid nan problems.
+        encoder= SpatialFusedTimeHasher(spatial_bounding_box=(-bound, bound),
+                                        time_resolution_levels=num_levels,
+                                        n_features_per_t_level=level_dim,
+                                        log2_time_hashmap_size=log2_hashmap_size,
+                                        base_t_resolution=base_resolution,
+                                        finest_t_resolution=desired_resolution,
+                                        )
+
+
+
     else:
         raise NotImplementedError('Unknown encoding mode, choose from [None, frequency, sphere_harmonics, hashgrid, tiledgrid]')
 
     return encoder, encoder.output_dim
+
+

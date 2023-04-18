@@ -1,9 +1,17 @@
+import datetime
+import time
+
 import torch
 import argparse
 
 from dnerf.provider import NeRFDataset
 from dnerf.gui import NeRFGUI
 from dnerf.utils import *
+
+import os
+
+#os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:32"
+
 
 from functools import partial
 from loss import huber_loss
@@ -32,6 +40,10 @@ if __name__ == '__main__':
     parser.add_argument('--upsample_steps', type=int, default=0, help="num steps up-sampled per ray (only valid when NOT using --cuda_ray)")
     parser.add_argument('--max_ray_batch', type=int, default=4096, help="batch size of rays at inference to avoid OOM (only valid when NOT using --cuda_ray)")
     parser.add_argument('--patch_size', type=int, default=1, help="[experimental] render patches in training, so as to apply LPIPS loss. 1 means disabled, use [64, 32, 16] to enable")
+
+    parser.add_argument('--spatial_reso', type=int, default=1024, help="spatial resolution of dynamic ngp")
+    parser.add_argument('--log2_hashmap_size', type=int, default=19, help="log2_hashmap_size")
+
 
     ### network backbone options
     parser.add_argument('--fp16', action='store_true', help="use amp mixed precision training")
@@ -83,19 +95,22 @@ if __name__ == '__main__':
     elif opt.hyper:
         from dnerf.network_hyper import NeRFNetwork
     else:
-        from dnerf.network import NeRFNetwork
+        from dnerf.network import NeRFNetwork,MyTimeNGP
 
     print(opt)
     
     seed_everything(opt.seed)
 
-    model = NeRFNetwork(
+    model = MyTimeNGP(
+    #model = NeRFNetwork(
         bound=opt.bound,
         cuda_ray=opt.cuda_ray,
         density_scale=1,
         min_near=opt.min_near,
         density_thresh=opt.density_thresh,
         bg_radius=opt.bg_radius,
+        spatial_reso=opt.spatial_reso,
+        log2_hashmap_size=opt.log2_hashmap_size
     )
     
     print(model)
@@ -108,7 +123,7 @@ if __name__ == '__main__':
     
     if opt.test:
 
-        trainer = Trainer('ngp', opt, model, device=device, workspace=opt.workspace, criterion=criterion, fp16=opt.fp16, metrics=[PSNRMeter()], use_checkpoint=opt.ckpt)
+        trainer = Trainer('ngp', opt, model, device=device, workspace=opt.workspace, criterion=criterion, fp16=  opt.fp16, metrics=[PSNRMeter()], use_checkpoint=opt.ckpt)
 
         if opt.gui:
             gui = NeRFGUI(opt, trainer)
@@ -143,7 +158,20 @@ if __name__ == '__main__':
             valid_loader = NeRFDataset(opt, device=device, type='val', downscale=1).dataloader()
 
             max_epoch = np.ceil(opt.iters / len(train_loader)).astype(np.int32)
+
+            import datetime
+            t0=datetime.datetime.now()
+            print(torch.cuda.is_available()) #necessary, do not delete
+
+
+
+
             trainer.train(train_loader, valid_loader, max_epoch)
+
+            t1=datetime.datetime.now()
+            dt=(t1-t0).seconds
+            dmins=math.floor(dt/60)
+            print(f'time elapse={dt} seconds,i.e.{dmins} min {dt-dmins*60} s')
 
             # also test
             test_loader = NeRFDataset(opt, device=device, type='test').dataloader()

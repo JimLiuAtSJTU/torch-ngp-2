@@ -32,6 +32,20 @@ from packaging import version as pver
 import lpips
 from torchmetrics.functional import structural_similarity_index_measure
 
+
+
+#torch.autograd.set_detect_anomaly(mode=True)
+
+
+def check(var):
+    return
+    assert not torch.isnan(var).any()
+
+    assert not torch.isinf(var).any()
+
+
+
+
 def custom_meshgrid(*args):
     # ref: https://pytorch.org/docs/stable/generated/torch.meshgrid.html?highlight=meshgrid#torch.meshgrid
     if pver.parse(torch.__version__) < pver.parse('1.10'):
@@ -347,7 +361,7 @@ class Trainer(object):
         self.world_size = world_size
         self.workspace = workspace
         self.ema_decay = ema_decay
-        self.fp16 = fp16
+        self.fp16 =  fp16  # fp16
         self.best_mode = best_mode
         self.use_loss_as_metric = use_loss_as_metric
         self.report_metric_at_train = report_metric_at_train
@@ -390,7 +404,8 @@ class Trainer(object):
         else:
             self.ema = None
 
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.fp16)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.fp16,init_scale=2**28,  growth_interval=200
+                                                )
 
         # variable init
         self.epoch = 0
@@ -645,7 +660,25 @@ class Trainer(object):
         for epoch in range(self.epoch + 1, max_epochs + 1):
             self.epoch = epoch
 
-            self.train_one_epoch(train_loader)
+            profile=False
+            if profile:
+
+                with torch.profiler.profile(
+                        activities=[
+                            torch.profiler.ProfilerActivity.CPU,
+                            torch.profiler.ProfilerActivity.CUDA,
+                        ]
+                ) as p:
+                    self.train_one_epoch(train_loader)
+
+                    print(f'train complete')
+                print(p.key_averages().table(
+                    sort_by="self_cuda_time_total", row_limit=-1))
+
+                print(f'profiler complete')
+                exit(0)
+            else:
+                self.train_one_epoch(train_loader)
 
             if self.workspace is not None and self.local_rank == 0:
                 self.save_checkpoint(full=True, best=False)
@@ -707,8 +740,12 @@ class Trainer(object):
                 pbar.update(loader.batch_size)
         
         if write_video:
+            writer = imageio.get_writer(os.path.join(save_path, f'{name}_rgb.mp4'), fps=20)
+
+
             all_preds = np.stack(all_preds, axis=0)
             all_preds_depth = np.stack(all_preds_depth, axis=0)
+            os.makedirs(save_path,exist_ok=True)
             imageio.mimwrite(os.path.join(save_path, f'{name}_rgb.mp4'), all_preds, fps=25, quality=8, macro_block_size=1)
             imageio.mimwrite(os.path.join(save_path, f'{name}_depth.mp4'), all_preds_depth, fps=25, quality=8, macro_block_size=1)
 
@@ -747,12 +784,27 @@ class Trainer(object):
 
             with torch.cuda.amp.autocast(enabled=self.fp16):
                 preds, truths, loss = self.train_step(data)
-         
+            check(preds)
+            check(truths)
+            check(loss)
+
+            scale=self.scaler.get_scale()
+
             self.scaler.scale(loss).backward()
+
+            check(loss)
+            check(loss.grad)
+
+            self.scaler.unscale_(optimizer=self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
+
             self.scaler.step(self.optimizer)
             self.scaler.update()
-            
-            if self.scheduler_update_every_step:
+
+
+            skip_lr_schedu=(scale>self.scaler.get_scale())
+
+            if self.scheduler_update_every_step and not skip_lr_schedu:
                 self.lr_scheduler.step()
 
             total_loss += loss.detach()
@@ -764,9 +816,11 @@ class Trainer(object):
 
         if not self.scheduler_update_every_step:
             if isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                self.lr_scheduler.step(average_loss)
+                if not skip_lr_schedu:
+                    self.lr_scheduler.step(average_loss)
             else:
-                self.lr_scheduler.step()
+                if not skip_lr_schedu:
+                    self.lr_scheduler.step()
 
         outputs = {
             'loss': average_loss,
@@ -862,12 +916,23 @@ class Trainer(object):
 
             with torch.cuda.amp.autocast(enabled=self.fp16):
                 preds, truths, loss = self.train_step(data)
-         
+
+
+            scale = self.scaler.get_scale()
+
+
+
             self.scaler.scale(loss).backward()
+
+            self.scaler.unscale_(optimizer=self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
+
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
-            if self.scheduler_update_every_step:
+            skip_scheduler = (scale > self.scaler.get_scale())
+
+            if self.scheduler_update_every_step and not skip_scheduler:
                 self.lr_scheduler.step()
 
             loss_val = loss.item()

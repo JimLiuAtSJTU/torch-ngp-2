@@ -116,7 +116,17 @@ class Trainer(_Trainer):
 
         # deform regularization
         if 'deform' in outputs and outputs['deform'] is not None:
-            loss = loss + 1e-3 * outputs['deform'].abs().mean()
+            check(outputs['deform'])
+
+            L1_loss=outputs['deform'].abs().mean() * 1e-3
+            L1_loss=torch.clip(L1_loss,min=1e-5,max=1)
+
+            check(L1_loss)
+
+
+            loss = loss +0
+            check(loss)
+
         
         return pred_rgb, gt_rgb, loss
 

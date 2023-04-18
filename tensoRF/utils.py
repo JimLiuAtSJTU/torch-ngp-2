@@ -33,7 +33,6 @@ class Trainer(_Trainer):
 
         self.optimizer_fn = optimizer
         self.lr_scheduler_fn = lr_scheduler
-
         super().__init__(name, opt, model, criterion, optimizer, ema_decay, lr_scheduler, metrics, local_rank, world_size, device, mute, fp16, eval_interval, max_keep_ckpt, workspace, best_mode, use_loss_as_metric, report_metric_at_train, use_checkpoint, use_tensorboardX, scheduler_update_every_step)
         
     ### ------------------------------	
@@ -82,12 +81,17 @@ class Trainer(_Trainer):
 
             with torch.cuda.amp.autocast(enabled=self.fp16):
                 preds, truths, loss = self.train_step(data)
-         
+
+
+            scale=self.scaler.get_scale()
             self.scaler.scale(loss).backward()
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            torch.cuda.empty_cache()
 
-            if self.scheduler_update_every_step:
+            skip_scheduler=(scale>self.scaler.get_scale())
+
+            if self.scheduler_update_every_step and not skip_scheduler:
                 self.lr_scheduler.step()
 
             loss_val = loss.item()
